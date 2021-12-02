@@ -14,7 +14,7 @@ import math
 import cv2
 import numpy as np
 from skimage.util import img_as_ubyte
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import MiniBatchKMeans, DBSCAN
 from tqdm import tqdm
 
 
@@ -76,7 +76,7 @@ def UniformFramescv2(cap, numframes2pick, start, stop, Index=None):
         round(stop * nframes * 1.0 / cap.fps, 2),
         " seconds.",
     )
-
+    
     if Index is None:
         if start == 0:
             frames2pick = np.random.choice(
@@ -403,3 +403,159 @@ def KmeansbasedFrameselectioncv2(
         return list(np.array(frames2pick))
     else:
         return list(Index)
+
+
+#######################################
+# new tools :)
+#######################################
+
+import umap
+
+def get_Index(cap, start, stop, step):
+    nframes = len(cap)
+    startindex = int(np.floor(nframes * start))
+    stopindex = int(np.ceil(nframes * stop))
+    Index = np.arange(startindex, stopindex, step)
+    return Index
+
+def get_data_from_cap(cap, resizewidth, start, stop, crop, coords, Index, color):
+    nx, ny = cap.dimensions
+    if resizewidth is None:
+        ratio = 1.0
+    else:
+        ratio = resizewidth / nx
+
+    if ratio > 1:
+        raise Exception("Choice of resizewidth actually upsamples!")
+
+    cap_set_required = np.mean(np.diff(Index)) > 1 # whether non-consecutive indices are present, thus cap.set is required (which slows everything down!)
+    
+    allocated = False
+    nframes = len(Index)
+    print("Extracting... ", nframes, " frames from the video.")
+    for counter, index in tqdm(enumerate(Index)):
+        if cap_set_required:
+            cap.set_to_frame(index)  # extract a particular frame
+        frame = cap.read_frame()
+        if frame is not None:
+            if crop:
+                frame = frame[
+                    int(coords[2]) : int(coords[3]),
+                    int(coords[0]) : int(coords[1]),
+                    :,
+                ]
+
+            # image=img_as_ubyte(cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),None,fx=ratio,fy=ratio))
+            image = img_as_ubyte(
+                cv2.resize(
+                    frame,
+                    None,
+                    fx=ratio,
+                    fy=ratio,
+                    interpolation=cv2.INTER_NEAREST,
+                )
+            )  # color trafo not necessary; lack thereof improves speed.
+            if (
+                not allocated
+            ):  #'DATA' not in locals(): #allocate memory in first pass
+                if color:
+                    DATA = np.empty(
+                        (nframes, np.shape(image)[0], np.shape(image)[1] * 3)
+                    )
+                else:
+                    DATA = np.empty(
+                        (nframes, np.shape(image)[0], np.shape(image)[1])
+                    )
+
+                allocated = True
+            
+            if color:
+                DATA[counter, :, :] = np.hstack(
+                    [image[:, :, 0], image[:, :, 1], image[:, :, 2]]
+                )
+            else:
+                DATA[counter, :, :] = np.mean(image, 2)
+
+    data = DATA - DATA.mean(axis=0)
+    data = data.reshape(nframes, -1)  # vectorizing frames
+
+    return data
+
+
+def UMAPbasedFrameselectioncv2(
+    cap,
+    numframes2pick,
+    start,
+    stop,
+    crop,
+    coords,
+    Index=None,
+    step=1,
+    resizewidth=None,
+    umap_n_neighbors=20,
+    umap_min_dist=0.2,
+    umap_embed=None,
+    random_state=42, # we can set this to run, so that we get the same embedding for a particular run
+    clustering_method="kmeans",
+    batchsize=100,
+    max_iter=50,
+    db_eps=0.5,
+    db_min_samples=10,
+    color=False,
+):
+    """ 
+    The video is extracted as a numpy array, which is then reduced in dimensionality to 2D with UMAP and cluster with kmeans or dbscan, whereby each frames is treated as a 2D vector.
+    Frames from different clusters are then selected for labeling. This procedure makes sure that the frames "look different",
+    i.e. different postures etc. On large videos this code is slow.
+
+    Consider not extracting the frames from the whole video but rather set start and stop to a period around interesting behavior.
+
+    Note: this method can return fewer images than numframes2pick.
+    """
+    
+    Index = get_Index(cap, start, stop, step)
+    
+    if umap_embed is None:
+        data = get_data_from_cap(cap, resizewidth, start, stop, crop, coords, Index, color)
+        print("UMAP projection...")
+        print(f"UMAP random state {random_state}")
+        umap_reducer = umap.UMAP(n_neighbors=umap_n_neighbors, min_dist=umap_min_dist, random_state=random_state)
+        umap_embed = umap_reducer.fit_transform(data)
+        print("UMAP projection done.")
+    else:
+        print("UMAP projection already provided, no need to run UMAP :)")
+     
+    print(f"{clustering_method} clustering... (may take a while)")
+    if clustering_method == "dbscan":
+        clustering = DBSCAN(eps=db_eps, min_samples=db_min_samples)
+    elif clustering_method == "kmeans":
+        clustering = MiniBatchKMeans(
+            n_clusters=numframes2pick, tol=1e-3, batch_size=batchsize, max_iter=max_iter,
+            random_state=random_state,
+        )
+    else:
+        raise Exception("Unknown clustering method" + clustering_method)
+    clustering.fit(umap_embed)
+    print(f"{clustering_method} clustering done!")
+
+    print(f"number of clusters found: {len(set(clustering.labels_))}")
+
+    frames2pick = []
+    for clusterid in range(numframes2pick):  # pick one frame per cluster
+        clusterids = np.where(clusterid == clustering.labels_)[0]
+        
+        # if kmeans, select frames closest in the embedding to the centroid
+        if clustering_method == "kmeans":
+           cluster_center = clustering.cluster_centers_[clusterid]
+           points = umap_embed[clusterids]
+
+           distances = np.linalg.norm(points - cluster_center, axis=1)
+           i = np.argmin(distances)
+           frames2pick.append(Index[clusterids[i]])
+        else:
+           numimagesofcluster = len(clusterids)
+           if numimagesofcluster > 0:
+               frames2pick.append(Index[clusterids[np.random.randint(numimagesofcluster)]])
+
+    # cap.release() >> still used in frame_extraction!
+    return list(np.array(frames2pick)), umap_embed, clustering

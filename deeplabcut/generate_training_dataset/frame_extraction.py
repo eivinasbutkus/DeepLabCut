@@ -68,7 +68,10 @@ def extract_frames(
     crop=False,
     userfeedback=True,
     cluster_step=1,
-    cluster_resizewidth=30,
+    resizewidth=30,
+    umap_n_neighbors=20,
+    umap_min_dist=0.1,
+    random_state=42,
     cluster_color=False,
     opencv=True,
     slider_width=25,
@@ -117,7 +120,7 @@ def extract_frames(
         where the user is asked for each video if (additional/any) frames from this video should be extracted. Use this, e.g. if you have already labeled
         some folders and want to extract data for new videos.
 
-    cluster_resizewidth: number, default: 30
+    resizewidth: number, default: 30
         For k-means one can change the width to which the images are downsampled (aspect ratio is fixed).
 
     cluster_step: number, default: 1
@@ -283,6 +286,7 @@ def extract_frames(
                     coords = None
 
                 print("Extracting frames based on %s ..." % algo)
+                print(f"resizewidth {resizewidth}")
                 if algo == "uniform":
                     if opencv:
                         frames2pick = frameselectiontools.UniformFramescv2(
@@ -302,7 +306,7 @@ def extract_frames(
                             crop,
                             coords,
                             step=cluster_step,
-                            resizewidth=cluster_resizewidth,
+                            resizewidth=resizewidth,
                             color=cluster_color,
                         )
                     else:
@@ -312,9 +316,28 @@ def extract_frames(
                             start,
                             stop,
                             step=cluster_step,
-                            resizewidth=cluster_resizewidth,
+                            resizewidth=resizewidth,
                             color=cluster_color,
                         )
+                elif algo == "umap":
+                    if opencv:
+                        frames2pick, _, _ = frameselectiontools.UMAPbasedFrameselectioncv2(
+                            cap,
+                            numframes2pick,
+                            start,
+                            stop,
+                            crop,
+                            coords,
+                            step=cluster_step,
+                            resizewidth=resizewidth,
+                            color=cluster_color,
+                            umap_n_neighbors=umap_n_neighbors,
+                            umap_min_dist=umap_min_dist,
+                            random_state=random_state,
+                        )
+                    else:
+                        raise Exception("UMAP not on cv2 is not implmented")
+
                 else:
                     print(
                         "Please implement this method yourself and send us a pull request! Otherwise, choose 'uniform' or 'kmeans'."
@@ -324,6 +347,13 @@ def extract_frames(
                 if not len(frames2pick):
                     print("Frame selection failed...")
                     return
+                
+                ### eivinas code ###
+                ### saving the frame numbers
+                import pandas as pd
+                df = pd.DataFrame(sorted(frames2pick), columns=["frame"])
+                df.to_csv(Path(config).parents[0] / "labeled-data" / "frames2pick.csv", index=False)
+                ###################
 
                 output_path = (
                     Path(config).parents[0] / "labeled-data" / Path(video).stem

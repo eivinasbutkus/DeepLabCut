@@ -86,13 +86,16 @@ def create_new_project(
     if working_directory == None:
         working_directory = "."
     wd = Path(working_directory).resolve()
-    project_name = "{pn}-{exp}-{date}".format(pn=project, exp=experimenter, date=date)
+    #project_name = "{pn}-{exp}-{date}".format(pn=project, exp=experimenter, date=date)
+    project_name = f"{project}" # just save the project name
     project_path = wd / project_name
 
     # Create project and sub-directories
     if not DEBUG and project_path.exists():
         print('Project "{}" already exists!'.format(project_path))
-        return
+        projconfigfile = os.path.join(str(project_path), "config.yaml")
+        return projconfigfile
+
     video_path = project_path / "videos"
     data_path = project_path / "labeled-data"
     shuffles_path = project_path / "training-datasets"
