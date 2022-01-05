@@ -337,6 +337,21 @@ def extract_frames(
                         )
                     else:
                         raise Exception("UMAP not on cv2 is not implmented")
+                elif algo == "pca":
+                    if opencv:
+                        frames2pick, _, _ = frameselectiontools.PCAbasedFrameselectioncv2(
+                            cap,
+                            numframes2pick,
+                            start,
+                            stop,
+                            crop,
+                            coords,
+                            step=cluster_step,
+                            resizewidth=resizewidth,
+                            color=cluster_color,
+                        )
+                    else:
+                        raise Exception("PCA not on cv2 is not implmented")
 
                 else:
                     print(

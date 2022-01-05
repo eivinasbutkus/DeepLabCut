@@ -410,6 +410,7 @@ def KmeansbasedFrameselectioncv2(
 #######################################
 
 import umap
+from sklearn.decomposition import PCA
 
 def get_Index(cap, start, stop, step):
     nframes = len(cap)
@@ -559,3 +560,74 @@ def UMAPbasedFrameselectioncv2(
 
     # cap.release() >> still used in frame_extraction!
     return list(np.array(frames2pick)), umap_embed, clustering
+
+
+def PCAbasedFrameselectioncv2(
+    cap,
+    numframes2pick,
+    start,
+    stop,
+    crop,
+    coords,
+    Index=None,
+    step=1,
+    resizewidth=None,
+    random_state=42, # we can set this to run, so that we get the same embedding for a particular run
+    clustering_method="kmeans",
+    batchsize=100,
+    max_iter=50,
+    db_eps=0.5,
+    db_min_samples=10,
+    color=False,
+):
+    """ 
+    The video is extracted as a numpy array, which is then reduced in dimensionality to 2D with UMAP and cluster with kmeans or dbscan, whereby each frames is treated as a 2D vector.
+    Frames from different clusters are then selected for labeling. This procedure makes sure that the frames "look different",
+    i.e. different postures etc. On large videos this code is slow.
+
+    Consider not extracting the frames from the whole video but rather set start and stop to a period around interesting behavior.
+
+    Note: this method can return fewer images than numframes2pick.
+    """
+    
+    Index = get_Index(cap, start, stop, step)
+    
+    data = get_data_from_cap(cap, resizewidth, start, stop, crop, coords, Index, color)
+    
+    pca_reducer = PCA(n_components=2)
+    pca_embed = pca_reducer.fit_transform(data)
+     
+    print(f"{clustering_method} clustering... (may take a while)")
+    if clustering_method == "dbscan":
+        clustering = DBSCAN(eps=db_eps, min_samples=db_min_samples)
+    elif clustering_method == "kmeans":
+        clustering = MiniBatchKMeans(
+            n_clusters=numframes2pick, tol=1e-3, batch_size=batchsize, max_iter=max_iter,
+            random_state=random_state,
+        )
+    else:
+        raise Exception("Unknown clustering method" + clustering_method)
+    clustering.fit(pca_embed)
+    print(f"{clustering_method} clustering done!")
+
+    print(f"number of clusters found: {len(set(clustering.labels_))}")
+
+    frames2pick = []
+    for clusterid in range(numframes2pick):  # pick one frame per cluster
+        clusterids = np.where(clusterid == clustering.labels_)[0]
+        
+        # if kmeans, select frames closest in the embedding to the centroid
+        if clustering_method == "kmeans":
+           cluster_center = clustering.cluster_centers_[clusterid]
+           points = pca_embed[clusterids]
+
+           distances = np.linalg.norm(points - cluster_center, axis=1)
+           i = np.argmin(distances)
+           frames2pick.append(Index[clusterids[i]])
+        else:
+           numimagesofcluster = len(clusterids)
+           if numimagesofcluster > 0:
+               frames2pick.append(Index[clusterids[np.random.randint(numimagesofcluster)]])
+
+    # cap.release() >> still used in frame_extraction!
+    return list(np.array(frames2pick)), pca_embed, clustering
